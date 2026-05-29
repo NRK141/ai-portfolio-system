@@ -63,9 +63,15 @@ execution:
 
 rebalance:
   scheduled_frequency: "Y"
-  monthly_hard_single_name_check: true
+
+  # New setting. Valid options: "NONE", "W", "M", "Q", "SA", "Y".
+  # Recommended default: "W" because the previous monthly hard-cap check allowed MU
+  # to breach the cap after the final monthly review.
+  hard_cap_check_frequency: "W"
+
   stock_hard_trigger: 0.10
   stock_hard_trim_to: 0.07
+
   diversifier_hard_triggers:
     IAU: 0.20
     SLV: 0.20
@@ -76,6 +82,34 @@ rebalance:
     SLV: 0.15
     ICOP: 0.15
     VXUS: 0.18
+
+strategy_comparison:
+  enabled: true
+  variants:
+    - name: "Annual Only"
+      scheduled_frequency: "Y"
+      hard_cap_check_frequency: "NONE"
+    - name: "Annual + Weekly Hard Cap"
+      scheduled_frequency: "Y"
+      hard_cap_check_frequency: "W"
+    - name: "Annual + Monthly Hard Cap"
+      scheduled_frequency: "Y"
+      hard_cap_check_frequency: "M"
+    - name: "Annual + Quarterly Hard Cap"
+      scheduled_frequency: "Y"
+      hard_cap_check_frequency: "Q"
+    - name: "Semiannual Only"
+      scheduled_frequency: "SA"
+      hard_cap_check_frequency: "NONE"
+    - name: "Quarterly Only"
+      scheduled_frequency: "Q"
+      hard_cap_check_frequency: "NONE"
+    - name: "Monthly Only"
+      scheduled_frequency: "M"
+      hard_cap_check_frequency: "NONE"
+    - name: "Buy Once / No Rebalance"
+      scheduled_frequency: "NONE"
+      hard_cap_check_frequency: "NONE"
 
 risk_alerts:
   direct_semi_tickers: ["ASML", "MU", "TSM", "NVDA", "AVGO", "AMD"]

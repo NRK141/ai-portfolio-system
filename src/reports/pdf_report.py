@@ -34,9 +34,9 @@ def metric_value(key, value):
         k = str(key).lower()
         if "beta" in k:
             return fmt_num(value, 4)
-        if "return" in k or "volatility" in k or "drawdown" in k or "correlation" in k:
+        if "return" in k or "volatility" in k or "drawdown" in k or "correlation" in k or "weight" in k:
             return fmt_pct(value)
-        if "equity" in k:
+        if "equity" in k or "value" in k:
             return fmt_money(value)
         return fmt_num(value, 4)
     return str(value)
@@ -51,6 +51,10 @@ def make_table(data, font_size=8, col_widths=None):
                 ("FONTSIZE", (0, 0), (-1, -1), font_size),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
@@ -100,6 +104,7 @@ def export_pdf(
     cluster_exposure: pd.DataFrame,
     cap_breach: pd.DataFrame,
     risk_contrib: pd.DataFrame,
+    strategy_comparison: pd.DataFrame | None = None,
 ):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,8 +135,8 @@ def export_pdf(
         ["Start Date", config["project"]["start_date"]],
         ["Whole Shares", str(config["execution"]["whole_shares"])],
         ["Slippage BPS", fmt_num(config["execution"]["slippage_bps"])],
-        ["Annual Rebalance", config["rebalance"]["scheduled_frequency"]],
-        ["Monthly Hard Cap", str(config["rebalance"]["monthly_hard_single_name_check"])],
+        ["Scheduled Rebalance", config["rebalance"]["scheduled_frequency"]],
+        ["Hard Cap Check Frequency", config["rebalance"]["hard_cap_check_frequency"]],
         ["Stock Hard Trigger", fmt_pct(config["rebalance"]["stock_hard_trigger"])],
         ["Stock Trim To", fmt_pct(config["rebalance"]["stock_hard_trim_to"])],
     ]
@@ -148,6 +153,44 @@ def export_pdf(
     story.append(make_table(metric_rows, font_size=8, col_widths=[3.0 * inch, 2.0 * inch]))
 
     story.append(PageBreak())
+    story.append(Paragraph("Strategy Comparison", h1))
+    if strategy_comparison is not None and not strategy_comparison.empty:
+        comp_cols = [
+            "Strategy",
+            "Scheduled Frequency",
+            "Hard Cap Frequency",
+            "Rebalance Count",
+            "Hard Cap Count",
+            "Final Equity",
+            "Annual Return / CAGR",
+            "Annual Volatility",
+            "Sharpe",
+            "Max Drawdown",
+            "Calmar",
+            "Worst 52W Return",
+            "Beta vs SPY",
+        ]
+        story.append(
+            make_table(
+                df_to_table(
+                    strategy_comparison,
+                    columns=comp_cols,
+                    pct_cols=[
+                        "Annual Return / CAGR",
+                        "Annual Volatility",
+                        "Max Drawdown",
+                        "Worst 52W Return",
+                    ],
+                    money_cols=["Final Equity"],
+                    max_rows=30,
+                ),
+                font_size=5.8,
+            )
+        )
+    else:
+        story.append(Paragraph("Strategy comparison was not generated.", body))
+
+    story.append(PageBreak())
     story.append(Paragraph("Equity Curve and Drawdown", h1))
     if "equity_curve" in chart_paths:
         story.append(Image(chart_paths["equity_curve"], width=9.5 * inch, height=4.2 * inch))
@@ -157,76 +200,87 @@ def export_pdf(
 
     story.append(PageBreak())
     story.append(Paragraph("Window Summary", h1))
-    story.append(make_table(
-        df_to_table(
-            window_summary,
-            pct_cols=[
-                "Annual Return / CAGR",
-                "Annual Volatility",
-                "Max Drawdown",
-                "Worst 52W Return",
-                "Correlation vs SPY",
-                "SPY Annual Return",
-                "SPY Annual Volatility",
-                "SPY Max Drawdown",
-            ],
-            max_rows=20,
-        ),
-        font_size=6.5,
-    ))
+    story.append(
+        make_table(
+            df_to_table(
+                window_summary,
+                pct_cols=[
+                    "Annual Return / CAGR",
+                    "Annual Volatility",
+                    "Max Drawdown",
+                    "Worst 52W Return",
+                    "Correlation vs SPY",
+                    "SPY Annual Return",
+                    "SPY Annual Volatility",
+                    "SPY Max Drawdown",
+                ],
+                max_rows=20,
+            ),
+            font_size=6.5,
+        )
+    )
 
     story.append(PageBreak())
     story.append(Paragraph("Final Holdings", h1))
-    story.append(make_table(
-        df_to_table(
-            holdings_snapshot,
-            columns=["Ticker", "Target Weight", "Final Weight", "Drift From Target", "Final Shares", "Final Value"],
-            pct_cols=["Target Weight", "Final Weight", "Drift From Target"],
-            money_cols=["Final Value"],
-            max_rows=30,
-        ),
-        font_size=7.0,
-    ))
+    story.append(
+        make_table(
+            df_to_table(
+                holdings_snapshot,
+                columns=["Ticker", "Target Weight", "Final Weight", "Drift From Target", "Final Shares", "Final Value"],
+                pct_cols=["Target Weight", "Final Weight", "Drift From Target"],
+                money_cols=["Final Value"],
+                max_rows=30,
+            ),
+            font_size=7.0,
+        )
+    )
 
     story.append(Spacer(1, 0.2 * inch))
     story.append(Paragraph("Cluster Exposure", h1))
-    story.append(make_table(
-        df_to_table(
-            cluster_exposure,
-            pct_cols=["Target Weight", "Final Weight", "Drift From Target"],
-            max_rows=10,
-        ),
-        font_size=7.5,
-    ))
+    story.append(
+        make_table(
+            df_to_table(
+                cluster_exposure,
+                pct_cols=["Target Weight", "Final Weight", "Drift From Target"],
+                max_rows=10,
+            ),
+            font_size=7.5,
+        )
+    )
 
     story.append(PageBreak())
     story.append(Paragraph("Cap Breach Report", h1))
-    story.append(make_table(
-        df_to_table(
-            cap_breach,
-            pct_cols=["Target Weight", "Final Weight", "Hard Trigger", "Trim-To Weight"],
-            max_rows=30,
-        ),
-        font_size=7.0,
-    ))
+    story.append(
+        make_table(
+            df_to_table(
+                cap_breach,
+                pct_cols=["Target Weight", "Final Weight", "Hard Trigger", "Trim-To Weight"],
+                max_rows=30,
+            ),
+            font_size=7.0,
+        )
+    )
 
     story.append(Spacer(1, 0.2 * inch))
     story.append(Paragraph("Risk Contribution", h1))
-    story.append(make_table(
-        df_to_table(
-            risk_contrib.reset_index().rename(columns={"index": "Ticker"}),
-            pct_cols=["Weight Used", "Risk Contribution %"],
-            max_rows=30,
-        ),
-        font_size=7.0,
-    ))
+    story.append(
+        make_table(
+            df_to_table(
+                risk_contrib.reset_index().rename(columns={"index": "Ticker"}),
+                pct_cols=["Weight Used", "Risk Contribution %"],
+                max_rows=30,
+            ),
+            font_size=7.0,
+        )
+    )
 
     story.append(PageBreak())
     story.append(Paragraph("Notes", h1))
     notes = [
         "This free version uses current mega-cap candidates unless you provide a point-in-time market-cap CSV.",
         "Point-in-time market caps are the biggest remaining accuracy upgrade.",
-        "Cluster caps are report-only alerts in this version; only monthly hard single-name caps actively trade.",
+        "Cluster caps are report-only alerts in this version; only hard single-name/diversifier caps actively trade.",
+        "Hard cap frequency is configurable. Weekly is stricter than monthly and should reduce final cap breaches.",
         "Results are backtests and can be overstated by data limitations, taxes, and survivorship bias.",
     ]
     for note in notes:

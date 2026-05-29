@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict
 
 import numpy as np
 import pandas as pd
@@ -9,10 +9,16 @@ from src.engine.execution import ExecutionModel
 
 
 def get_rebalance_dates(index: pd.Index, freq: str) -> list[pd.Timestamp]:
+    """Return the first available trading date for each requested period."""
     freq = str(freq).upper()
     idx = pd.DatetimeIndex(index)
 
+    if len(idx) == 0:
+        return []
+
     if freq == "NONE":
+        return []
+    if freq == "ONCE":
         return [idx[0]]
     if freq == "W":
         return list(idx)
@@ -34,11 +40,13 @@ def get_rebalance_dates(index: pd.Index, freq: str) -> list[pd.Timestamp]:
 def current_values(row: pd.Series, shares: dict[str, float], cash: float):
     values = {}
     holdings_value = 0.0
-    for t, sh in shares.items():
-        px = row.get(t, np.nan)
-        val = sh * px if pd.notna(px) else 0.0
-        values[t] = val
+
+    for ticker, qty in shares.items():
+        px = row.get(ticker, np.nan)
+        val = qty * px if pd.notna(px) else 0.0
+        values[ticker] = val
         holdings_value += val
+
     return values, holdings_value, holdings_value + cash
 
 
@@ -59,55 +67,71 @@ class BacktestEngine:
         self.equity_universe = set(equity_universe)
         self.diversifiers = diversifiers
         self.execution = execution
-        self.cash_return_annual = cash_return_annual
-        self.periods_per_year = periods_per_year
+        self.cash_return_annual = float(cash_return_annual)
+        self.periods_per_year = int(periods_per_year)
 
     def apply_cash_return(self, cash: float) -> float:
         if self.cash_return_annual == 0:
             return cash
+
         rate = (1 + self.cash_return_annual) ** (1 / self.periods_per_year) - 1
         return cash * (1 + rate)
 
     def full_rebalance(self, row: pd.Series, shares: dict[str, float], cash: float):
         shares = shares.copy()
-        _, _, pv = current_values(row, shares, cash)
-        if pv <= 0:
+        _, _, portfolio_value = current_values(row, shares, cash)
+
+        if portfolio_value <= 0:
             return shares, cash
 
-        target_values = {t: pv * w for t, w in self.target_weights.items()}
+        target_values = {
+            ticker: portfolio_value * weight
+            for ticker, weight in self.target_weights.items()
+        }
 
-        # Sell overweights first.
-        for t, target_val in target_values.items():
-            px = row.get(t, np.nan)
+        # 1) Sell overweight positions first. This makes cash available before buys.
+        for ticker, target_value in target_values.items():
+            px = row.get(ticker, np.nan)
+
             if pd.isna(px) or px <= 0:
                 continue
 
-            current_val = shares.get(t, 0.0) * px
-            if current_val > target_val:
-                sell_qty = shares.get(t, 0.0) - (target_val / px)
-                shares, cash, _ = self.execution.sell_quantity(t, sell_qty, px, shares, cash)
+            current_value = shares.get(ticker, 0.0) * px
 
-        # Recompute and buy underweights.
-        _, _, pv = current_values(row, shares, cash)
-        target_values = {t: pv * w for t, w in self.target_weights.items()}
+            if current_value > target_value:
+                desired_qty = target_value / px
+                sell_qty = shares.get(ticker, 0.0) - desired_qty
+                shares, cash, _ = self.execution.sell_quantity(ticker, sell_qty, px, shares, cash)
+
+        # 2) Recompute and buy underweight positions.
+        _, _, portfolio_value = current_values(row, shares, cash)
+        target_values = {
+            ticker: portfolio_value * weight
+            for ticker, weight in self.target_weights.items()
+        }
+
         deficits = []
+        for ticker, target_value in target_values.items():
+            px = row.get(ticker, np.nan)
 
-        for t, target_val in target_values.items():
-            px = row.get(t, np.nan)
             if pd.isna(px) or px <= 0:
                 continue
 
-            current_val = shares.get(t, 0.0) * px
-            deficit = target_val - current_val
+            current_value = shares.get(ticker, 0.0) * px
+            deficit = target_value - current_value
+
             if deficit > self.execution.min_trade_dollars:
-                deficits.append((t, deficit))
+                deficits.append((ticker, deficit))
 
         deficits = sorted(deficits, key=lambda x: x[1], reverse=True)
-        for t, deficit in deficits:
-            px = row.get(t, np.nan)
+
+        for ticker, deficit in deficits:
+            px = row.get(ticker, np.nan)
+
             if pd.isna(px) or px <= 0:
                 continue
-            shares, cash, _ = self.execution.buy_with_budget(t, deficit, px, shares, cash)
+
+            shares, cash, _ = self.execution.buy_with_budget(ticker, deficit, px, shares, cash)
 
         return shares, cash
 
@@ -121,70 +145,85 @@ class BacktestEngine:
         diversifier_hard_triggers: Dict[str, float],
         diversifier_hard_trim_to: Dict[str, float],
     ):
+        """Trim hard-cap breaches and redeploy freed cash to underweights.
+
+        This is intentionally single-name based. Cluster caps should remain alerts only
+        unless you explicitly choose to add cluster trading rules later.
+        """
         shares = shares.copy()
-        values, _, pv = current_values(row, shares, cash)
-        if pv <= 0:
+        values, _, portfolio_value = current_values(row, shares, cash)
+
+        if portfolio_value <= 0:
             return shares, cash, []
 
         triggers = []
         cash_before = cash
 
-        for t, val in values.items():
-            px = row.get(t, np.nan)
+        # 1) Sell any hard-cap breaches to their trim-to weight.
+        for ticker, value in values.items():
+            px = row.get(ticker, np.nan)
+
             if pd.isna(px) or px <= 0:
                 continue
 
-            weight = val / pv
+            current_weight = value / portfolio_value
             trigger = None
             trim_to = None
 
-            if t in self.equity_universe:
+            if ticker in self.equity_universe:
                 trigger = stock_hard_trigger
                 trim_to = stock_hard_trim_to
-            elif t in self.diversifiers:
-                trigger = diversifier_hard_triggers.get(t)
-                trim_to = diversifier_hard_trim_to.get(t)
+            elif ticker in self.diversifiers:
+                trigger = diversifier_hard_triggers.get(ticker)
+                trim_to = diversifier_hard_trim_to.get(ticker)
 
             if trigger is None or trim_to is None:
                 continue
 
-            if weight > trigger:
-                trim_value = pv * trim_to
-                if val > trim_value:
-                    sell_value = val - trim_value
+            if current_weight > trigger:
+                trim_value = portfolio_value * trim_to
+
+                if value > trim_value:
+                    sell_value = value - trim_value
                     sell_qty = sell_value / px
-                    shares, cash, _ = self.execution.sell_quantity(t, sell_qty, px, shares, cash)
-                    triggers.append(f"{t}: {weight:.2%} > {trigger:.2%}, trim to {trim_to:.2%}")
+                    shares, cash, _ = self.execution.sell_quantity(ticker, sell_qty, px, shares, cash)
+                    triggers.append(
+                        f"{ticker}: {current_weight:.2%} > {trigger:.2%}; trim to {trim_to:.2%}"
+                    )
 
         freed_cash = max(cash - cash_before, 0.0)
+
         if freed_cash <= 0:
             return shares, cash, triggers
 
-        # Redeploy freed cash to underweights, proportional to deficits.
-        values, _, pv = current_values(row, shares, cash)
+        # 2) Redeploy freed cash toward underweight target positions.
+        values, _, portfolio_value = current_values(row, shares, cash)
         deficits = []
         total_deficit = 0.0
 
-        for t, target_w in self.target_weights.items():
-            px = row.get(t, np.nan)
+        for ticker, target_weight in self.target_weights.items():
+            px = row.get(ticker, np.nan)
+
             if pd.isna(px) or px <= 0:
                 continue
 
-            target_val = pv * target_w
-            current_val = values.get(t, 0.0)
-            deficit = max(target_val - current_val, 0.0)
+            target_value = portfolio_value * target_weight
+            current_value = values.get(ticker, 0.0)
+            deficit = max(target_value - current_value, 0.0)
 
             if deficit > self.execution.min_trade_dollars:
-                deficits.append((t, deficit))
+                deficits.append((ticker, deficit))
                 total_deficit += deficit
 
         if total_deficit > 0:
-            for t, deficit in deficits:
-                px = row.get(t, np.nan)
+            for ticker, deficit in deficits:
+                px = row.get(ticker, np.nan)
+
                 if pd.isna(px) or px <= 0:
                     continue
+
                 budget = min(cash, freed_cash * (deficit / total_deficit))
-                shares, cash, _ = self.execution.buy_with_budget(t, budget, px, shares, cash)
+                shares, cash, _ = self.execution.buy_with_budget(ticker, budget, px, shares, cash)
 
         return shares, cash, triggers
 
@@ -192,23 +231,30 @@ class BacktestEngine:
         self,
         initial_capital: float,
         scheduled_frequency: str,
-        monthly_hard_single_name_check: bool,
+        hard_cap_check_frequency: str,
         stock_hard_trigger: float,
         stock_hard_trim_to: float,
         diversifier_hard_triggers: Dict[str, float],
         diversifier_hard_trim_to: Dict[str, float],
     ):
-        scheduled_dates = set(get_rebalance_dates(self.prices.index, scheduled_frequency))
-        hard_check_dates = set(get_rebalance_dates(self.prices.index, "M")) if monthly_hard_single_name_check else set()
+        scheduled_frequency = str(scheduled_frequency).upper()
+        hard_cap_check_frequency = str(hard_cap_check_frequency).upper()
 
-        # Invest new assets on their first valid date.
-        for t in self.tickers:
-            if t in self.prices.columns:
-                first_valid = self.prices[t].first_valid_index()
+        scheduled_dates = set(get_rebalance_dates(self.prices.index, scheduled_frequency))
+        if scheduled_frequency == "NONE":
+            # Buy once at the start, while still allowing new tickers to be bought on their first valid date.
+            scheduled_dates = {self.prices.index[0]}
+
+        hard_check_dates = set(get_rebalance_dates(self.prices.index, hard_cap_check_frequency))
+
+        # Invest new assets on their first valid date. This is important for ICOP / shorter-history assets.
+        for ticker in self.tickers:
+            if ticker in self.prices.columns:
+                first_valid = self.prices[ticker].first_valid_index()
                 if first_valid is not None:
                     scheduled_dates.add(first_valid)
 
-        shares = {t: 0.0 for t in self.tickers}
+        shares = {ticker: 0.0 for ticker in self.tickers}
         cash = float(initial_capital)
 
         equity_curve = []
@@ -229,38 +275,45 @@ class BacktestEngine:
 
             elif date in hard_check_dates:
                 shares, cash, triggers = self.hard_cap_trim(
-                    row,
-                    shares,
-                    cash,
-                    stock_hard_trigger,
-                    stock_hard_trim_to,
-                    diversifier_hard_triggers,
-                    diversifier_hard_trim_to,
+                    row=row,
+                    shares=shares,
+                    cash=cash,
+                    stock_hard_trigger=stock_hard_trigger,
+                    stock_hard_trim_to=stock_hard_trim_to,
+                    diversifier_hard_triggers=diversifier_hard_triggers,
+                    diversifier_hard_trim_to=diversifier_hard_trim_to,
                 )
+
                 if triggers:
-                    reason = "monthly_hard_cap"
+                    reason = f"hard_cap_{hard_cap_check_frequency.lower()}"
                     trigger_text = "; ".join(triggers)
 
-            values, _, pv = current_values(row, shares, cash)
+            values, _, portfolio_value = current_values(row, shares, cash)
 
             if reason:
                 rebalance_records.append(
                     {
                         "Date": date,
                         "Reason": reason,
-                        "Portfolio Value": pv,
+                        "Portfolio Value": portfolio_value,
                         "Cash": cash,
                         "Triggers": trigger_text,
                     }
                 )
 
-            equity_curve.append(pv)
+            equity_curve.append(portfolio_value)
             cash_curve.append(cash)
 
-            record = {"Date": date, "Portfolio Value": pv, "Cash": cash}
-            for t in self.tickers:
-                record[f"{t}_Shares"] = shares.get(t, 0.0)
-                record[f"{t}_Value"] = values.get(t, 0.0)
+            record = {
+                "Date": date,
+                "Portfolio Value": portfolio_value,
+                "Cash": cash,
+            }
+
+            for ticker in self.tickers:
+                record[f"{ticker}_Shares"] = shares.get(ticker, 0.0)
+                record[f"{ticker}_Value"] = values.get(ticker, 0.0)
+
             holdings_records.append(record)
 
         equity = pd.Series(equity_curve, index=self.prices.index, name="Portfolio")
