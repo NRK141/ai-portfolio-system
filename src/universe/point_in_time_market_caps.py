@@ -8,19 +8,48 @@ import pandas as pd
 from src.data.yahoo_provider import normalize_ticker, unique_preserve_order
 from src.engine.backtest import get_rebalance_dates
 
+
 REQUIRED_COLUMNS = {"date", "ticker", "market_cap"}
 
 
-def load_point_in_time_market_caps(path: str | Path) -> pd.DataFrame:
-    """Load a user-supplied point-in-time market-cap file.
+YFINANCE_TICKER_MAP = {
+    # CRSP historical ticker -> Yahoo/current ticker.
+    "FB": "META",
+    "BRK": "BRK-B",
+    "BRK.B": "BRK-B",
+    "BRK-B": "BRK-B",
+    "BF.B": "BF-B",
+    "BF-B": "BF-B",
+}
 
-    Required columns: date,ticker,market_cap
-    CSV and Parquet are supported.
+
+def to_yfinance_ticker(ticker: str) -> str:
+    t = normalize_ticker(ticker)
+    return YFINANCE_TICKER_MAP.get(t, t)
+
+
+def normalize_frequency_list(freqs) -> list[str]:
+    if freqs is None:
+        return []
+    if isinstance(freqs, str):
+        return [freqs.upper()]
+    return [str(f).upper() for f in freqs]
+
+
+def load_point_in_time_market_caps(path: str | Path) -> pd.DataFrame:
+    """
+    Load a user-supplied point-in-time market-cap file.
+
+    Required columns:
+        date,ticker,market_cap
+
+    The file can be CSV or Parquet. Tickers are normalized to yfinance format.
     """
     path = Path(path)
+
     if not path.exists():
         raise FileNotFoundError(
-            f"Point-in-time market-cap file not found: {path}. "
+            f"Point-in-time market-cap file not found: {path}\n"
             "Expected columns: date,ticker,market_cap"
         )
 
@@ -31,15 +60,23 @@ def load_point_in_time_market_caps(path: str | Path) -> pd.DataFrame:
 
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
-        raise ValueError(f"Missing PIT market-cap columns: {sorted(missing)}")
+        raise ValueError(
+            f"Point-in-time market-cap file is missing columns: {sorted(missing)}. "
+            "Expected at least: date,ticker,market_cap"
+        )
 
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
-    df["ticker"] = df["ticker"].map(normalize_ticker)
+    df["ticker"] = df["ticker"].map(normalize_ticker).map(to_yfinance_ticker)
     df["market_cap"] = pd.to_numeric(df["market_cap"], errors="coerce")
+
     df = df.dropna(subset=["date", "ticker", "market_cap"])
+    df = df[df["ticker"].astype(str).str.strip().ne("")]
+    df = df[df["ticker"].astype(str).str.upper().ne("N/A")]
     df = df[df["market_cap"] > 0]
-    return df.sort_values(["date", "ticker"]).reset_index(drop=True)
+    df = df.sort_values(["date", "ticker"]).reset_index(drop=True)
+
+    return df
 
 
 def latest_market_caps_asof(
@@ -47,7 +84,9 @@ def latest_market_caps_asof(
     asof_date: pd.Timestamp,
     min_market_cap: float = 0.0,
 ) -> pd.DataFrame:
-    """For each ticker, use latest market-cap observation on or before asof_date."""
+    """
+    For each ticker, use the latest market-cap observation known on or before asof_date.
+    """
     asof_date = pd.Timestamp(asof_date)
     subset = market_caps.loc[market_caps["date"] <= asof_date].copy()
 
@@ -55,12 +94,14 @@ def latest_market_caps_asof(
         subset = subset.loc[subset["market_cap"] >= float(min_market_cap)]
 
     if subset.empty:
-        return pd.DataFrame(columns=list(market_caps.columns) + ["rank_date", "rank"])
+        return pd.DataFrame(columns=list(market_caps.columns) + ["rank_date"])
 
-    latest = subset.sort_values(["ticker", "date"]).groupby("ticker", as_index=False).tail(1)
+    subset = subset.sort_values(["ticker", "date"])
+    latest = subset.groupby("ticker", as_index=False).tail(1)
     latest = latest.sort_values("market_cap", ascending=False).reset_index(drop=True)
     latest["rank"] = latest.index + 1
     latest["rank_date"] = asof_date
+
     return latest
 
 
@@ -74,18 +115,18 @@ def build_point_in_time_universe_by_date(
     asof_lag_days: int = 0,
     min_market_cap: float = 0.0,
 ) -> tuple[dict[pd.Timestamp, list[str]], pd.DataFrame]:
-    """Build historical top-market-cap universes without looking forward.
+    """
+    Build a dynamic point-in-time universe for each ranking/rotation date.
 
-    On each ranking date:
-    - Rank using market caps dated <= ranking_date - asof_lag_days.
-    - Force anchors into the portfolio.
-    - Fill remaining slots with top ranked names available in price data.
+    The strategy rotates tickers whenever the selected ranking_frequency produces
+    a new ranking date. Example: M rotates monthly, Q rotates quarterly, SA
+    rotates semiannually, Y rotates annually.
     """
     idx = pd.DatetimeIndex(prices_index)
     ranking_dates = get_rebalance_dates(idx, ranking_frequency)
 
-    anchors = [normalize_ticker(t) for t in anchors]
-    available = set(normalize_ticker(t) for t in available_cols)
+    anchors = [to_yfinance_ticker(t) for t in anchors]
+    available = set(to_yfinance_ticker(t) for t in available_cols)
 
     missing_anchors = [t for t in anchors if t not in available]
     if missing_anchors:
@@ -98,18 +139,23 @@ def build_point_in_time_universe_by_date(
         ranking_date = pd.Timestamp(ranking_date)
         asof_date = ranking_date - pd.Timedelta(days=int(asof_lag_days))
 
-        latest = latest_market_caps_asof(market_caps, asof_date, float(min_market_cap))
+        latest = latest_market_caps_asof(
+            market_caps=market_caps,
+            asof_date=asof_date,
+            min_market_cap=float(min_market_cap),
+        )
+
         latest = latest.loc[latest["ticker"].isin(available)].copy()
 
         if latest.empty:
             raise ValueError(
-                f"No PIT market-cap data available as of {asof_date.date()} "
+                f"No point-in-time market-cap data available as of {asof_date.date()} "
                 f"for ranking date {ranking_date.date()}."
             )
 
         ranked = latest["ticker"].tolist()
-        universe = []
 
+        universe = []
         for t in anchors:
             if t not in universe:
                 universe.append(t)
@@ -123,7 +169,7 @@ def build_point_in_time_universe_by_date(
         if len(universe) < total_positions:
             raise ValueError(
                 f"Only built {len(universe)} names for {ranking_date.date()}. "
-                f"Need {total_positions}."
+                f"Need {total_positions}. Increase point_in_time_download_top_n."
             )
 
         universe_by_date[ranking_date] = universe
@@ -135,6 +181,7 @@ def build_point_in_time_universe_by_date(
         for slot, ticker in enumerate(universe, start=1):
             rows.append(
                 {
+                    "ranking_frequency": str(ranking_frequency).upper(),
                     "ranking_date": ranking_date,
                     "asof_date": asof_date,
                     "ticker": ticker,
@@ -146,9 +193,87 @@ def build_point_in_time_universe_by_date(
                 }
             )
 
-    return universe_by_date, pd.DataFrame(rows)
+    membership = pd.DataFrame(rows)
+    return universe_by_date, membership
 
 
-def unique_tickers_from_market_cap_file(path: str | Path) -> list[str]:
-    df = load_point_in_time_market_caps(path)
-    return unique_preserve_order(df["ticker"].dropna().astype(str).tolist())
+def build_pit_candidate_universe(
+    prices_index: Iterable[pd.Timestamp],
+    market_caps: pd.DataFrame,
+    anchors: list[str],
+    diversifiers: list[str],
+    benchmark: str,
+    ranking_frequencies,
+    asof_lag_days: int = 0,
+    min_market_cap: float = 0.0,
+    top_n_per_ranking_date: int = 100,
+) -> tuple[list[str], pd.DataFrame]:
+    """
+    Build a SMALL yfinance download universe before downloading prices.
+
+    Do NOT download all WRDS tickers from Yahoo. This function downloads only:
+    anchors + diversifiers + benchmark + top N names for each ranking date/frequency.
+    """
+    idx = pd.DatetimeIndex(prices_index)
+    freqs = normalize_frequency_list(ranking_frequencies)
+
+    anchors = [to_yfinance_ticker(t) for t in anchors]
+    diversifiers = [to_yfinance_ticker(t) for t in diversifiers]
+    benchmark = to_yfinance_ticker(benchmark)
+
+    rows = []
+
+    for freq in freqs:
+        ranking_dates = get_rebalance_dates(idx, freq)
+
+        for ranking_date in ranking_dates:
+            ranking_date = pd.Timestamp(ranking_date)
+            asof_date = ranking_date - pd.Timedelta(days=int(asof_lag_days))
+
+            latest = latest_market_caps_asof(
+                market_caps=market_caps,
+                asof_date=asof_date,
+                min_market_cap=float(min_market_cap),
+            )
+
+            if latest.empty:
+                continue
+
+            latest = latest.head(int(top_n_per_ranking_date)).copy()
+            latest["ranking_frequency"] = freq
+            latest["ranking_date"] = ranking_date
+            latest["asof_date"] = asof_date
+            rows.append(latest)
+
+    if rows:
+        candidates = pd.concat(rows, ignore_index=True)
+    else:
+        candidates = pd.DataFrame(columns=["ranking_frequency", "ranking_date", "asof_date", "ticker", "market_cap", "rank"])
+
+    pit_tickers = candidates["ticker"].dropna().astype(str).tolist() if not candidates.empty else []
+    tickers = unique_preserve_order(anchors + diversifiers + [benchmark] + pit_tickers)
+
+    return tickers, candidates
+
+
+def summarize_universe_membership(universe_membership: pd.DataFrame) -> pd.DataFrame:
+    if universe_membership is None or universe_membership.empty:
+        return pd.DataFrame()
+
+    df = universe_membership.copy()
+    rows = []
+
+    for freq, group in df.groupby("ranking_frequency", dropna=False):
+        rows.append(
+            {
+                "Ranking Frequency": freq,
+                "Ranking Dates": group["ranking_date"].nunique(),
+                "Rows": len(group),
+                "Unique Tickers": group["ticker"].nunique(),
+                "First Ranking Date": group["ranking_date"].min(),
+                "Last Ranking Date": group["ranking_date"].max(),
+                "Anchor Rows": int(group["is_anchor"].sum()),
+            }
+        )
+
+    return pd.DataFrame(rows)

@@ -12,14 +12,34 @@ data:
 
 universe:
   total_equity_positions: 15
-  anchors: ["ASML", "MU", "TSM", "NVDA", "GOOG", "META"]
+  anchors: ["GOOG", "META"] # ["ASML", "MU", "TSM", "NVDA"] as future anchors 
 
-  # false = current free-source mega-cap candidates / fallback list.
-  # true  = point-in-time ranking from data/raw/point_in_time_market_caps.csv.
-  use_point_in_time_market_caps: false
+  # false = current free scrape/fallback static universe.
+  # true  = data/raw/point_in_time_market_caps.csv drives historical universe rotation.
+  use_point_in_time_market_caps: true
   point_in_time_market_caps_path: "data/raw/point_in_time_market_caps.csv"
-  point_in_time_ranking_frequency: "Y"
+
+  # SELECTED STRATEGY MODE:
+  # M  = monthly ranking refresh / rotation
+  # Q  = quarterly ranking refresh / rotation
+  # SA = semiannual ranking refresh / rotation
+  # Y  = annual ranking refresh / rotation
+  point_in_time_ranking_frequency: "Q"
+
+  # Candidate download frequencies.
+  # Keep this as the union of modes you want to test so Yahoo only downloads
+  # the top candidates from all tested ranking schedules, not all WRDS tickers.
+  point_in_time_candidate_frequencies: ["M", "Q", "SA", "Y"]
+
+  # How many top market-cap names to pre-download from Yahoo for each ranking date.
+  # Increase if a ranking date cannot build 15 names due to missing/delisted Yahoo tickers.
+  # Decrease if yfinance rate-limits.
+  point_in_time_download_top_n: 100
+
+  # Optional data lag. Example: 7 means rank using market-cap data available 7 days before rebalance.
   point_in_time_asof_lag_days: 0
+
+  # Optional minimum market cap filter. Set 0 to disable.
   point_in_time_min_market_cap: 0
 
   use_web_scraper: true
@@ -69,20 +89,36 @@ execution:
   cash_return_annual: 0.00
 
 rebalance:
+  # For PIT mode, ranking dates trigger rotation automatically.
+  # This scheduled frequency is still used for static mode and as a fallback.
   scheduled_frequency: "Y"
+
+  # Active risk-control frequency.
+  # Options: NONE, W, M, Q, SA, Y
   hard_cap_check_frequency: "W"
+
   stock_hard_trigger: 0.10
   stock_hard_trim_to: 0.07
+
   diversifier_hard_triggers:
     IAU: 0.20
     SLV: 0.20
     ICOP: 0.20
     VXUS: 0.25
+
   diversifier_hard_trim_to:
     IAU: 0.15
     SLV: 0.15
     ICOP: 0.15
     VXUS: 0.18
+
+analysis:
+  run_strategy_comparison: true
+
+  # Tests PIT ranking/rotation frequency modes to determine which performs best.
+  # M = Monthly, Q = Quarterly, SA = Semiannual, Y = Annual
+  run_ranking_frequency_comparison: true
+  ranking_frequencies_to_test: ["M", "Q", "SA", "Y"]
 
 risk_alerts:
   direct_semi_tickers: ["ASML", "MU", "TSM", "NVDA", "AVGO", "AMD"]

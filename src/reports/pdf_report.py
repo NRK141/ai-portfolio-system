@@ -51,10 +51,6 @@ def make_table(data, font_size=8, col_widths=None):
                 ("FONTSIZE", (0, 0), (-1, -1), font_size),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                ("TOPPADDING", (0, 0), (-1, -1), 3),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
@@ -93,6 +89,27 @@ def df_to_table(df, columns=None, pct_cols=None, money_cols=None, max_rows=30, d
     return data
 
 
+def universe_summary_table(universe_membership: pd.DataFrame):
+    if universe_membership is None or universe_membership.empty:
+        return pd.DataFrame()
+
+    df = universe_membership.copy()
+    rows = []
+    for freq, group in df.groupby("ranking_frequency", dropna=False):
+        rows.append(
+            {
+                "Ranking Frequency": freq,
+                "Ranking Dates": group["ranking_date"].nunique(),
+                "Rows": len(group),
+                "Unique Tickers": group["ticker"].nunique(),
+                "First Ranking Date": group["ranking_date"].min(),
+                "Last Ranking Date": group["ranking_date"].max(),
+                "Anchor Rows": int(group["is_anchor"].sum()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def export_pdf(
     output_path: str | Path,
     config: dict,
@@ -105,6 +122,9 @@ def export_pdf(
     cap_breach: pd.DataFrame,
     risk_contrib: pd.DataFrame,
     strategy_comparison: pd.DataFrame | None = None,
+    universe_membership: pd.DataFrame | None = None,
+    pit_download_candidates: pd.DataFrame | None = None,
+    ranking_frequency_comparison: pd.DataFrame | None = None,
 ):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +149,7 @@ def export_pdf(
     story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", body))
     story.append(Spacer(1, 0.2 * inch))
 
+    uni_cfg = config.get("universe", {})
     settings = [
         ["Setting", "Value"],
         ["Initial Capital", fmt_money(config["project"]["initial_capital"])],
@@ -139,22 +160,65 @@ def export_pdf(
         ["Hard Cap Check Frequency", config["rebalance"]["hard_cap_check_frequency"]],
         ["Stock Hard Trigger", fmt_pct(config["rebalance"]["stock_hard_trigger"])],
         ["Stock Trim To", fmt_pct(config["rebalance"]["stock_hard_trim_to"])],
+        ["PIT Market Caps Enabled", str(uni_cfg.get("use_point_in_time_market_caps", False))],
+        ["PIT Ranking Frequency", str(uni_cfg.get("point_in_time_ranking_frequency", "N/A"))],
+        ["PIT Candidate Frequencies", str(uni_cfg.get("point_in_time_candidate_frequencies", "N/A"))],
+        ["PIT Download Top N", str(uni_cfg.get("point_in_time_download_top_n", "N/A"))],
+        ["PIT Asof Lag Days", str(uni_cfg.get("point_in_time_asof_lag_days", "N/A"))],
+        ["PIT Min Market Cap", str(uni_cfg.get("point_in_time_min_market_cap", "N/A"))],
     ]
-    story.append(make_table(settings, font_size=8, col_widths=[2.5 * inch, 6.5 * inch]))
+    story.append(make_table(settings, font_size=8, col_widths=[2.7 * inch, 6.3 * inch]))
+
+    if universe_membership is not None and not universe_membership.empty:
+        story.append(Spacer(1, 0.15 * inch))
+        story.append(Paragraph("Point-in-Time Universe Summary", h1))
+        usum = universe_summary_table(universe_membership)
+        story.append(make_table(df_to_table(usum, max_rows=10), font_size=7.5))
 
     story.append(Spacer(1, 0.2 * inch))
     story.append(Paragraph("Target Weights", h1))
     weights_df = pd.DataFrame([{"Ticker": t, "Target Weight": w} for t, w in target_weights.items()])
-    story.append(make_table(df_to_table(weights_df, pct_cols=["Target Weight"], max_rows=30), font_size=8))
+    story.append(make_table(df_to_table(weights_df, pct_cols=["Target Weight"], max_rows=40), font_size=8))
 
     story.append(Spacer(1, 0.2 * inch))
     story.append(Paragraph("Main Metrics", h1))
     metric_rows = [["Metric", "Value"]] + [[k, metric_value(k, v)] for k, v in main_metrics.items()]
     story.append(make_table(metric_rows, font_size=8, col_widths=[3.0 * inch, 2.0 * inch]))
 
-    story.append(PageBreak())
-    story.append(Paragraph("Strategy Comparison", h1))
+    if ranking_frequency_comparison is not None and not ranking_frequency_comparison.empty:
+        story.append(PageBreak())
+        story.append(Paragraph("PIT Ranking Frequency Comparison", h1))
+        cols = [
+            "Ranking Frequency",
+            "Ranking Dates",
+            "Unique Tickers Used",
+            "Rebalance Count",
+            "Hard Cap Count",
+            "Final Equity",
+            "Annual Return / CAGR",
+            "Annual Volatility",
+            "Sharpe",
+            "Max Drawdown",
+            "Calmar",
+            "Worst 52W Return",
+            "Beta vs SPY",
+        ]
+        story.append(
+            make_table(
+                df_to_table(
+                    ranking_frequency_comparison,
+                    columns=cols,
+                    pct_cols=["Annual Return / CAGR", "Annual Volatility", "Max Drawdown", "Worst 52W Return"],
+                    money_cols=["Final Equity"],
+                    max_rows=10,
+                ),
+                font_size=5.8,
+            )
+        )
+
     if strategy_comparison is not None and not strategy_comparison.empty:
+        story.append(PageBreak())
+        story.append(Paragraph("Strategy Comparison", h1))
         comp_cols = [
             "Strategy",
             "Scheduled Frequency",
@@ -175,20 +239,40 @@ def export_pdf(
                 df_to_table(
                     strategy_comparison,
                     columns=comp_cols,
-                    pct_cols=[
-                        "Annual Return / CAGR",
-                        "Annual Volatility",
-                        "Max Drawdown",
-                        "Worst 52W Return",
-                    ],
+                    pct_cols=["Annual Return / CAGR", "Annual Volatility", "Max Drawdown", "Worst 52W Return"],
                     money_cols=["Final Equity"],
-                    max_rows=30,
+                    max_rows=20,
                 ),
-                font_size=5.8,
+                font_size=5.5,
             )
         )
-    else:
-        story.append(Paragraph("Strategy comparison was not generated.", body))
+
+    if universe_membership is not None and not universe_membership.empty:
+        story.append(PageBreak())
+        story.append(Paragraph("Point-in-Time Universe Membership Sample", h1))
+        story.append(Paragraph("This table shows the first rows from the selected PIT ranking audit file.", body))
+        membership_cols = [
+            "ranking_frequency",
+            "ranking_date",
+            "asof_date",
+            "ticker",
+            "slot",
+            "is_anchor",
+            "market_cap_rank",
+            "market_cap",
+            "market_cap_observation_date",
+        ]
+        story.append(
+            make_table(
+                df_to_table(
+                    universe_membership,
+                    columns=membership_cols,
+                    money_cols=["market_cap"],
+                    max_rows=35,
+                ),
+                font_size=6.0,
+            )
+        )
 
     story.append(PageBreak())
     story.append(Paragraph("Equity Curve and Drawdown", h1))
@@ -200,87 +284,79 @@ def export_pdf(
 
     story.append(PageBreak())
     story.append(Paragraph("Window Summary", h1))
-    story.append(
-        make_table(
-            df_to_table(
-                window_summary,
-                pct_cols=[
-                    "Annual Return / CAGR",
-                    "Annual Volatility",
-                    "Max Drawdown",
-                    "Worst 52W Return",
-                    "Correlation vs SPY",
-                    "SPY Annual Return",
-                    "SPY Annual Volatility",
-                    "SPY Max Drawdown",
-                ],
-                max_rows=20,
-            ),
-            font_size=6.5,
-        )
-    )
+    story.append(make_table(
+        df_to_table(
+            window_summary,
+            pct_cols=[
+                "Annual Return / CAGR",
+                "Annual Volatility",
+                "Max Drawdown",
+                "Worst 52W Return",
+                "Correlation vs SPY",
+                "SPY Annual Return",
+                "SPY Annual Volatility",
+                "SPY Max Drawdown",
+            ],
+            max_rows=20,
+        ),
+        font_size=6.5,
+    ))
 
     story.append(PageBreak())
     story.append(Paragraph("Final Holdings", h1))
-    story.append(
-        make_table(
-            df_to_table(
-                holdings_snapshot,
-                columns=["Ticker", "Target Weight", "Final Weight", "Drift From Target", "Final Shares", "Final Value"],
-                pct_cols=["Target Weight", "Final Weight", "Drift From Target"],
-                money_cols=["Final Value"],
-                max_rows=30,
-            ),
-            font_size=7.0,
-        )
-    )
+    story.append(make_table(
+        df_to_table(
+            holdings_snapshot,
+            columns=["Ticker", "Target Weight", "Final Weight", "Drift From Target", "Final Shares", "Final Value"],
+            pct_cols=["Target Weight", "Final Weight", "Drift From Target"],
+            money_cols=["Final Value"],
+            max_rows=40,
+        ),
+        font_size=7.0,
+    ))
 
     story.append(Spacer(1, 0.2 * inch))
     story.append(Paragraph("Cluster Exposure", h1))
-    story.append(
-        make_table(
-            df_to_table(
-                cluster_exposure,
-                pct_cols=["Target Weight", "Final Weight", "Drift From Target"],
-                max_rows=10,
-            ),
-            font_size=7.5,
-        )
-    )
+    story.append(make_table(
+        df_to_table(
+            cluster_exposure,
+            pct_cols=["Target Weight", "Final Weight", "Drift From Target"],
+            max_rows=10,
+        ),
+        font_size=7.5,
+    ))
 
     story.append(PageBreak())
     story.append(Paragraph("Cap Breach Report", h1))
-    story.append(
-        make_table(
-            df_to_table(
-                cap_breach,
-                pct_cols=["Target Weight", "Final Weight", "Hard Trigger", "Trim-To Weight"],
-                max_rows=30,
-            ),
-            font_size=7.0,
-        )
-    )
+    story.append(make_table(
+        df_to_table(
+            cap_breach,
+            pct_cols=["Target Weight", "Final Weight", "Hard Trigger", "Trim-To Weight"],
+            max_rows=40,
+        ),
+        font_size=7.0,
+    ))
 
     story.append(Spacer(1, 0.2 * inch))
     story.append(Paragraph("Risk Contribution", h1))
-    story.append(
-        make_table(
-            df_to_table(
-                risk_contrib.reset_index().rename(columns={"index": "Ticker"}),
-                pct_cols=["Weight Used", "Risk Contribution %"],
-                max_rows=30,
-            ),
-            font_size=7.0,
-        )
-    )
+    story.append(make_table(
+        df_to_table(
+            risk_contrib.reset_index().rename(columns={"index": "Ticker"}),
+            pct_cols=["Weight Used", "Risk Contribution %"],
+            max_rows=40,
+        ),
+        font_size=7.0,
+    ))
 
     story.append(PageBreak())
     story.append(Paragraph("Notes", h1))
     notes = [
-        "This free version uses current mega-cap candidates unless you provide a point-in-time market-cap CSV.",
-        "Point-in-time market caps are the biggest remaining accuracy upgrade.",
+        "PIT mode uses a local WRDS/CRSP-derived point-in-time market-cap file when enabled.",
+        "The selected PIT ranking frequency controls how often the stock universe rotates.",
+        "M, Q, SA, and Y ranking frequencies can be tested through ranking_frequency_comparison.csv.",
         "Cluster caps are report-only alerts in this version; only hard single-name/diversifier caps actively trade.",
-        "Hard cap frequency is configurable. Weekly is stricter than monthly and should reduce final cap breaches.",
+        "This version still uses yfinance prices. A future CRSP-return mode should use CRSP returns and delisting returns.",
+        "Do not commit raw or derived WRDS data to GitHub. Keep WRDS files local/private and ignored by Git.",
         "Results are backtests and can be overstated by data limitations, taxes, and survivorship bias.",
     ]
     for note in notes:
