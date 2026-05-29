@@ -1,0 +1,100 @@
+project:
+  name: "AI Mega-Cap Rotation Free Data Backtest"
+  start_date: "2015-01-01"
+  end_date: null
+  initial_capital: 25000
+
+data:
+  price_source: "yfinance"
+  cache_prices: true
+  cache_dir: "data/cache"
+  return_frequency: "W-FRI"
+
+universe:
+  total_equity_positions: 15
+  anchors: ["ASML", "MU", "TSM", "NVDA", "GOOG", "META"]
+  use_web_scraper: true
+  scrape_top_n: 50
+  use_point_in_time_market_caps: false
+  point_in_time_market_caps_path: "data/raw/point_in_time_market_caps.csv"
+  fallback_mega_caps:
+    - NVDA
+    - MSFT
+    - AAPL
+    - AMZN
+    - GOOG
+    - GOOGL
+    - META
+    - AVGO
+    - TSM
+    - TSLA
+    - BRK-B
+    - LLY
+    - JPM
+    - WMT
+    - V
+    - ORCL
+    - MA
+    - XOM
+    - JNJ
+    - COST
+    - HD
+    - PG
+    - NFLX
+    - ASML
+    - MU
+    - AMD
+
+portfolio:
+  equity_weight: 0.60
+  diversifiers:
+    IAU: 0.10
+    SLV: 0.075
+    ICOP: 0.075
+    VXUS: 0.15
+  benchmark: "SPY"
+
+execution:
+  whole_shares: true
+  commission_per_trade: 0.00
+  slippage_bps: 2.0
+  min_trade_dollars: 25.0
+  cash_return_annual: 0.00
+
+rebalance:
+  scheduled_frequency: "Y"
+  monthly_hard_single_name_check: true
+  stock_hard_trigger: 0.10
+  stock_hard_trim_to: 0.07
+  diversifier_hard_triggers:
+    IAU: 0.20
+    SLV: 0.20
+    ICOP: 0.20
+    VXUS: 0.25
+  diversifier_hard_trim_to:
+    IAU: 0.15
+    SLV: 0.15
+    ICOP: 0.15
+    VXUS: 0.18
+
+risk_alerts:
+  direct_semi_tickers: ["ASML", "MU", "TSM", "NVDA", "AVGO", "AMD"]
+  ai_platform_tickers: ["GOOG", "META", "MSFT", "AMZN", "AAPL"]
+  direct_semi_soft_alert: 0.35
+  direct_semi_hard_alert: 0.38
+  total_ai_soft_alert: 0.52
+  total_ai_hard_alert: 0.55
+
+windows:
+  "2015-2019": ["2015-01-01", "2019-12-31"]
+  "2018-2022": ["2018-01-01", "2022-12-31"]
+  "2020-2022": ["2020-01-01", "2022-12-31"]
+  "2022 only": ["2022-01-01", "2022-12-31"]
+  "2022-2023": ["2022-01-01", "2023-12-31"]
+  "2023-Today": ["2023-01-01", null]
+  "2020-Today": ["2020-01-01", null]
+  "2015-Today": ["2015-01-01", null]
+
+report:
+  export_pdf: true
+  output_dir: "outputs"
