@@ -1,0 +1,79 @@
+
+# =========================
+# Python / runtime artifacts
+# =========================
+__pycache__/
+*.py[cod]
+*.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# =========================
+# Private WRDS / market data
+# =========================
+wrds_data/
+data/raw/point_in_time_market_caps.csv
+data/raw/wrds_*.csv
+data/raw/wrds_*.zip
+data/raw/wrds_*.gz
+data/raw/wrds_*.parquet
+data/processed/
+data/cache/*.parquet
+data/cache/*.csv
+
+# Keep folder placeholders if present
+!data/cache/.gitkeep
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# =========================
+# Generated backtest outputs
+# =========================
+outputs/charts/*
+outputs/csv/*
+outputs/reports/*
+outputs/*.csv
+outputs/*.png
+outputs/*.pdf
+outputs/*.md
+
+# Keep output folder placeholders
+!outputs/charts/.gitkeep
+!outputs/csv/.gitkeep
+!outputs/reports/.gitkeep
+
+# =========================
+# Generated screener outputs
+# =========================
+outputs/screener/*
+screener/outputs/*
+
+# Keep screener output placeholder
+!outputs/screener/.gitkeep
+!screener/outputs/.gitkeep
+
+# =========================
+# Private live portfolio files
+# =========================
+screener/data/current_holdings.csv
+data/current_holdings.csv
+
+# Keep templates
+!screener/data/current_holdings_template.csv
+!data/current_holdings_template.csv
+
+# =========================
+# Local OS/editor files
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
