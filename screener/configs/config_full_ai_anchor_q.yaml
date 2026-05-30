@@ -48,9 +48,22 @@ portfolio:
     - AMD
 
 data:
+  # LIVE screener default:
+  # Use StockAnalysis for today's ranking. If it fails, fall back to WRDS PIT.
+  use_live_market_caps_for_screener: true
+  live_market_cap_source: "stockanalysis"
+  live_market_cap_url: "https://stockanalysis.com/list/biggest-companies/"
+  live_market_caps_cache_path: "screener/data/live_market_caps_stockanalysis.csv"
+  live_market_caps_cache_max_age_hours: 12
+  fall_back_to_pit_on_live_failure: true
+
+  # Local WRDS/CRSP-derived PIT market-cap file. Private; do not commit.
   point_in_time_market_caps_path: "data/raw/point_in_time_market_caps.csv"
-  rank_source: "auto"
-  candidate_top_n: 100
+
+  # Used only for downloading current prices for ranking candidates.
+  candidate_top_n: 125
+
+  # Warn if PIT fallback data is older than this many calendar days.
   stale_rank_data_days: 45
 
 execution:
@@ -96,6 +109,7 @@ risk:
   diversifier_min_review: 0.35
 
 share_class_rules:
+  # Avoid duplicate Alphabet exposure. GOOG is preferred because it is an anchor.
   alphabet_preferred: "GOOG"
   alphabet_alternates:
     - "GOOGL"

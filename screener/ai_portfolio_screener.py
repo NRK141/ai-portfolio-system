@@ -17,6 +17,14 @@ except ImportError as exc:
         "pip install -r screener/requirements-screener.txt"
     ) from exc
 
+try:
+    from src.live_market_caps import fetch_stockanalysis_market_caps
+except ImportError as exc:
+    raise SystemExit(
+        "Could not import screener/src/live_market_caps.py. "
+        "Make sure this file exists and you are running from the repo root."
+    ) from exc
+
 
 YFINANCE_TICKER_MAP = {
     "FB": "META",
@@ -142,8 +150,65 @@ def load_pit_market_caps(path: str | Path, asof: pd.Timestamp) -> tuple[pd.DataF
     latest = df.groupby("ticker", as_index=False).tail(1)
     latest = latest.sort_values("market_cap", ascending=False).reset_index(drop=True)
     latest["market_cap_rank"] = latest.index + 1
+    latest["rank_source"] = "PIT_WRDS"
 
     return latest, global_latest_date
+
+
+def select_ranked_market_caps(
+    cfg: dict,
+    asof: pd.Timestamp,
+    force_refresh_live: bool = False,
+    disable_live: bool = False,
+) -> tuple[pd.DataFrame, str, pd.Timestamp | None, list[str]]:
+    """
+    Ranking source priority for the live screener:
+      1. StockAnalysis live market-cap ranking
+      2. Local WRDS PIT market-cap ranking
+      3. Static fallback mega-cap list
+    """
+    notes = []
+    data_cfg = cfg.get("data", {})
+    candidate_top_n = int(data_cfg.get("candidate_top_n", 125))
+
+    use_live = bool(data_cfg.get("use_live_market_caps_for_screener", True)) and not disable_live
+
+    if use_live:
+        try:
+            source = str(data_cfg.get("live_market_cap_source", "stockanalysis")).lower()
+            if source != "stockanalysis":
+                raise ValueError(f"Unsupported live market-cap source: {source}")
+
+            live = fetch_stockanalysis_market_caps(
+                limit=max(candidate_top_n, 150),
+                url=data_cfg.get("live_market_cap_url", "https://stockanalysis.com/list/biggest-companies/"),
+                cache_path=data_cfg.get("live_market_caps_cache_path", "screener/data/live_market_caps_stockanalysis.csv"),
+                cache_max_age_hours=float(data_cfg.get("live_market_caps_cache_max_age_hours", 12)),
+                force_refresh=force_refresh_live,
+            )
+
+            if not live.empty:
+                latest_rank_date = pd.Timestamp(live["date"].max())
+                return live, str(live["rank_source"].iloc[0]), latest_rank_date, notes
+
+        except Exception as exc:
+            msg = f"Live StockAnalysis ranking failed: {exc}"
+            notes.append(msg)
+            print(f"WARNING: {msg}")
+
+            if not bool(data_cfg.get("fall_back_to_pit_on_live_failure", True)):
+                raise
+
+    pit, pit_latest_date = load_pit_market_caps(data_cfg.get("point_in_time_market_caps_path", "data/raw/point_in_time_market_caps.csv"), asof=asof)
+    if not pit.empty:
+        return pit, "PIT_WRDS", pit_latest_date, notes
+
+    fallback = pd.DataFrame({"ticker": unique_preserve_order(cfg["portfolio"]["fallback_mega_caps"])})
+    fallback["market_cap_rank"] = range(1, len(fallback) + 1)
+    fallback["market_cap"] = pd.NA
+    fallback["date"] = pd.NaT
+    fallback["rank_source"] = "FALLBACK_STATIC_LIST"
+    return fallback, "FALLBACK_STATIC_LIST", None, notes
 
 
 def should_skip_share_class(ticker: str, selected: list[str], cfg: dict) -> bool:
@@ -158,27 +223,17 @@ def should_skip_share_class(ticker: str, selected: list[str], cfg: dict) -> bool
     return False
 
 
-def build_ranked_source(cfg: dict, ranked_caps: pd.DataFrame) -> tuple[pd.DataFrame, str]:
-    if ranked_caps.empty:
-        ranked = pd.DataFrame({"ticker": unique_preserve_order(cfg["portfolio"]["fallback_mega_caps"])})
-        ranked["market_cap_rank"] = range(1, len(ranked) + 1)
-        ranked["market_cap"] = pd.NA
-        ranked["date"] = pd.NaT
-        return ranked, "FALLBACK_STATIC_LIST"
-
-    return ranked_caps.copy(), "PIT_WRDS"
-
-
 def build_target_universe(
     cfg: dict,
     ranked_caps: pd.DataFrame,
     available_price_tickers: set[str],
-) -> tuple[list[str], pd.DataFrame, str]:
+) -> tuple[list[str], pd.DataFrame]:
     p = cfg["portfolio"]
     anchors = unique_preserve_order(p["anchors"])
     total_positions = int(p["total_equity_positions"])
 
-    ranked, source = build_ranked_source(cfg, ranked_caps)
+    ranked = ranked_caps.copy()
+    ranked["ticker"] = ranked["ticker"].map(normalize_ticker)
 
     universe = []
 
@@ -209,14 +264,12 @@ def build_target_universe(
             "Increase candidate_top_n or check yfinance prices."
         )
 
-    selected = ranked.copy()
-    selected["ticker"] = selected["ticker"].map(normalize_ticker)
-    selected["selected"] = selected["ticker"].isin(universe)
-    selected["skipped_duplicate_share_class"] = selected["ticker"].apply(
+    ranked["selected"] = ranked["ticker"].isin(universe)
+    ranked["skipped_duplicate_share_class"] = ranked["ticker"].apply(
         lambda t: should_skip_share_class(t, universe, cfg)
     )
 
-    return universe, selected, source
+    return universe, ranked
 
 
 def build_target_weights(cfg: dict, universe: list[str]) -> dict[str, float]:
@@ -335,9 +388,13 @@ def build_alerts(
     latest_rank_date: pd.Timestamp | None,
     asof: pd.Timestamp,
     ranking_source: str,
+    source_notes: list[str],
 ) -> pd.DataFrame:
     risk = cfg["risk"]
     alerts = []
+
+    for note in source_notes:
+        alerts.append({"severity": "WATCH", "type": "RANK_SOURCE", "ticker": "", "message": note})
 
     actual_weight = dict(zip(allocation["ticker"], allocation["current_weight"]))
     target_weight = dict(zip(allocation["ticker"], allocation["target_weight"]))
@@ -447,7 +504,7 @@ def save_report(
     lines.append(f"Current ranking date: {current_rebalance.date()}")
     lines.append(f"Next ranking date: {next_rebalance.date()}")
     lines.append(f"Ranking source: {source}")
-    lines.append(f"Latest PIT rank data date: {latest_rank_date.date() if latest_rank_date is not None else 'N/A'}")
+    lines.append(f"Latest rank data date: {latest_rank_date.date() if latest_rank_date is not None else 'N/A'}")
     lines.append(f"Whole-share targets: {cfg['execution'].get('whole_shares', False)}")
     lines.append(f"Portfolio value used: ${portfolio_value:,.2f}")
     lines.append("")
@@ -470,13 +527,15 @@ def save_report(
     lines.append("")
     lines.append("## Top Ranked Candidates")
     if not ranked_candidates.empty:
-        cols = [c for c in ["ticker", "market_cap_rank", "market_cap", "date", "selected", "skipped_duplicate_share_class"] if c in ranked_candidates.columns]
-        lines.append(ranked_candidates[cols].head(40).to_string(index=False))
+        cols = [c for c in ["ticker", "market_cap_rank", "market_cap", "date", "rank_source", "selected", "skipped_duplicate_share_class"] if c in ranked_candidates.columns]
+        lines.append(ranked_candidates[cols].head(50).to_string(index=False))
     else:
-        lines.append("No PIT ranked candidates available; fallback static list was used.")
+        lines.append("No ranked candidates available.")
     lines.append("")
     lines.append("## Notes")
     lines.append("- This is a live screener, not a backtest.")
+    lines.append("- Live StockAnalysis rankings are for current allocation decisions only.")
+    lines.append("- WRDS PIT rankings remain the correct source for historical backtests.")
     lines.append("- Full AI anchors are intentional for the forward-looking portfolio.")
     lines.append("- Quarterly ranking changes rotate the non-anchor top-market-cap sleeve.")
     lines.append("- Fractional share targets are recommended for small account sizes.")
@@ -487,12 +546,14 @@ def save_report(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Full AI-Anchor PIT Q portfolio screener.")
+    parser = argparse.ArgumentParser(description="Full AI-Anchor Q portfolio screener with live market-cap rankings.")
     parser.add_argument("--config", default="screener/configs/config_full_ai_anchor_q.yaml")
     parser.add_argument("--holdings", default=None, help="Optional CSV with ticker,shares.")
     parser.add_argument("--capital", type=float, default=None, help="Portfolio value to allocate if no holdings file is supplied.")
     parser.add_argument("--cash", type=float, default=0.0, help="Cash balance if holdings file is supplied.")
     parser.add_argument("--asof", default=None, help="YYYY-MM-DD. Defaults to today.")
+    parser.add_argument("--refresh-live-ranks", action="store_true", help="Force refresh StockAnalysis rankings instead of using cache.")
+    parser.add_argument("--no-live-ranks", action="store_true", help="Disable StockAnalysis and use WRDS PIT/fallback ranking.")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -506,17 +567,15 @@ def main():
         frequency=cfg["portfolio"]["ranking_frequency"],
     )
 
-    pit_path = cfg["data"]["point_in_time_market_caps_path"]
-    ranked_caps, latest_rank_date = load_pit_market_caps(pit_path, asof=asof)
+    ranked_caps, source, latest_rank_date, source_notes = select_ranked_market_caps(
+        cfg=cfg,
+        asof=asof,
+        force_refresh_live=args.refresh_live_ranks,
+        disable_live=args.no_live_ranks,
+    )
 
-    candidate_top_n = int(cfg["data"].get("candidate_top_n", 100))
-    if not ranked_caps.empty:
-        rank_candidates = ranked_caps.head(candidate_top_n)
-    else:
-        rank_candidates = pd.DataFrame({"ticker": unique_preserve_order(cfg["portfolio"]["fallback_mega_caps"])})
-        rank_candidates["market_cap_rank"] = range(1, len(rank_candidates) + 1)
-        rank_candidates["market_cap"] = pd.NA
-        rank_candidates["date"] = pd.NaT
+    candidate_top_n = int(cfg["data"].get("candidate_top_n", 125))
+    rank_candidates = ranked_caps.head(candidate_top_n).copy()
 
     tickers_to_price = unique_preserve_order(
         cfg["portfolio"]["anchors"]
@@ -529,7 +588,7 @@ def main():
     prices = download_latest_prices(tickers_to_price)
     available = set(prices.keys())
 
-    universe, ranked_candidates, source = build_target_universe(cfg, ranked_caps, available)
+    universe, ranked_candidates = build_target_universe(cfg, ranked_caps, available)
     target_weights = build_target_weights(cfg, universe)
 
     final_tickers = unique_preserve_order(list(target_weights.keys()) + [cfg["portfolio"]["benchmark"]])
@@ -553,6 +612,7 @@ def main():
         latest_rank_date=latest_rank_date,
         asof=asof,
         ranking_source=source,
+        source_notes=source_notes,
     )
 
     ranked_candidates = ranked_candidates.copy()
@@ -581,7 +641,7 @@ def main():
 
     print("\n===== SCREENER COMPLETE =====")
     print(f"Ranking source       : {source}")
-    print(f"Latest PIT rank date : {latest_rank_date.date() if latest_rank_date is not None else 'N/A'}")
+    print(f"Latest rank date     : {latest_rank_date.date() if latest_rank_date is not None else 'N/A'}")
     print(f"Selected frequency   : {cfg['portfolio']['ranking_frequency']}")
     print(f"Whole-share targets  : {cfg['execution'].get('whole_shares', False)}")
     print(f"Current ranking date : {current_rebalance.date()}")

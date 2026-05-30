@@ -1,33 +1,67 @@
-# Full AI-Anchor PIT Q Screener
+# Full AI-Anchor Q Screener
 
 This is the live screener for the forward-looking portfolio.
 
-## Fixes in this version
+## Strategy
 
-1. Fractional targets are enabled by default:
+- Full AI anchors:
+  - ASML
+  - MU
+  - TSM
+  - NVDA
+  - GOOG
+  - META
 
-```yaml
-execution:
-  whole_shares: false
-```
+- Quarterly market-cap leadership rotation:
+  - Ranking frequency: `Q`
+  - Total equity positions: 15
+  - Equity sleeve: 60%
+  - Each equity position target: 4%
 
-2. Duplicate Alphabet exposure is prevented:
-   - GOOG is preferred.
-   - GOOGL is skipped when GOOG is already in the target universe.
+- Diversifier sleeve:
+  - IAU: 10%
+  - SLV: 7.5%
+  - ICOP: 7.5%
+  - VXUS: 15%
 
-3. PIT data age warning is added:
-   - The screener alerts if the WRDS-derived market-cap ranking file is stale.
+## Ranking source priority
 
-## Run
+The live screener uses:
+
+1. StockAnalysis live market-cap rankings
+2. Local WRDS PIT market-cap rankings if live scraping fails
+3. Static fallback list if WRDS is unavailable
+
+Live rankings are for current allocation decisions only. Use WRDS PIT data for historical backtests.
+
+## Install
 
 ```powershell
-python screener/ai_portfolio_screener.py --config screener/config_full_ai_anchor_q.yaml --capital 25000
+pip install -r screener/requirements-screener.txt
 ```
 
-Or with live holdings:
+## Run with current holdings
 
 ```powershell
-python screener/ai_portfolio_screener.py --config screener/config_full_ai_anchor_q.yaml --holdings screener/current_holdings.csv --cash 500
+python screener/ai_portfolio_screener.py --holdings screener/data/current_holdings.csv --cash 0
+```
+
+## Force refresh live rankings
+
+```powershell
+python screener/ai_portfolio_screener.py --holdings screener/data/current_holdings.csv --cash 0 --refresh-live-ranks
+```
+
+## Disable live rankings and use WRDS PIT/fallback
+
+```powershell
+python screener/ai_portfolio_screener.py --holdings screener/data/current_holdings.csv --cash 0 --no-live-ranks
+```
+
+## Fresh allocation by capital
+
+```powershell
+python screener/ai_portfolio_screener.py --capital 25000 --refresh-live-ranks
 ```
 
 ## Outputs
@@ -40,4 +74,26 @@ outputs/screener/alerts.csv
 outputs/screener/ranked_candidates.csv
 ```
 
-Do not commit real WRDS data, current holdings, or screener outputs.
+## Git policy
+
+Do commit:
+
+```text
+screener/ai_portfolio_screener.py
+screener/src/live_market_caps.py
+screener/src/__init__.py
+screener/configs/config_full_ai_anchor_q.yaml
+screener/data/current_holdings_template.csv
+screener/requirements-screener.txt
+docs/SCREENER_README.md
+```
+
+Do not commit:
+
+```text
+screener/data/current_holdings.csv
+screener/data/live_market_caps_stockanalysis.csv
+outputs/screener/
+data/raw/point_in_time_market_caps.csv
+wrds_data/
+```
