@@ -1,0 +1,104 @@
+portfolio:
+  name: "Full AI-Anchor PIT Q Screener"
+  benchmark: "SPY"
+  total_equity_positions: 15
+  equity_weight: 0.60
+  ranking_frequency: "Q"
+
+  anchors:
+    - ASML
+    - MU
+    - TSM
+    - NVDA
+    - GOOG
+    - META
+
+  diversifiers:
+    IAU: 0.10
+    SLV: 0.075
+    ICOP: 0.075
+    VXUS: 0.15
+
+  fallback_mega_caps:
+    - NVDA
+    - MSFT
+    - AAPL
+    - AMZN
+    - GOOG
+    - GOOGL
+    - META
+    - AVGO
+    - TSM
+    - TSLA
+    - BRK-B
+    - LLY
+    - JPM
+    - WMT
+    - V
+    - ORCL
+    - MA
+    - XOM
+    - JNJ
+    - COST
+    - HD
+    - PG
+    - NFLX
+    - ASML
+    - MU
+    - AMD
+
+data:
+  point_in_time_market_caps_path: "data/raw/point_in_time_market_caps.csv"
+  rank_source: "auto"
+  candidate_top_n: 100
+  stale_rank_data_days: 45
+
+execution:
+  # Fractional targets are the correct default for small portfolios.
+  whole_shares: false
+  min_trade_dollars: 25.0
+
+risk:
+  stock_hard_trigger: 0.10
+  stock_hard_trim_to: 0.07
+
+  diversifier_hard_triggers:
+    IAU: 0.20
+    SLV: 0.20
+    ICOP: 0.20
+    VXUS: 0.25
+
+  diversifier_hard_trim_to:
+    IAU: 0.15
+    SLV: 0.15
+    ICOP: 0.15
+    VXUS: 0.18
+
+  direct_semi_tickers:
+    - ASML
+    - MU
+    - TSM
+    - NVDA
+    - AVGO
+    - AMD
+
+  ai_platform_tickers:
+    - GOOG
+    - META
+    - MSFT
+    - AMZN
+    - AAPL
+
+  direct_semi_soft_alert: 0.35
+  direct_semi_hard_alert: 0.38
+  total_ai_soft_alert: 0.50
+  total_ai_hard_alert: 0.55
+  diversifier_min_review: 0.35
+
+share_class_rules:
+  alphabet_preferred: "GOOG"
+  alphabet_alternates:
+    - "GOOGL"
+
+outputs:
+  output_dir: "outputs/screener"
