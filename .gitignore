@@ -64,6 +64,7 @@ screener/outputs/*
 # =========================
 screener/data/current_holdings.csv
 data/current_holdings.csv
+screener/data/live_market_caps_stockanalysis.csv
 
 # Keep templates
 !screener/data/current_holdings_template.csv
